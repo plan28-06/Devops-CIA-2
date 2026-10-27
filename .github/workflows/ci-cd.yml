@@ -1,26 +1,117 @@
-publish-image:
-    needs: build-and-test
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+name: Java CI/CD
 
-    steps:
-        - name: Checkout source code
-          uses: actions/checkout@v4
+on:
+    push:
+        branches: ["main"]
+    pull_request:
+        branches: ["main"]
 
-        - name: Log in to Azure
-          uses: azure/login@v2
-          with:
-              creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+permissions:
+    contents: read
 
-        - name: Get ACR login server
-          id: acr
-          shell: bash
-          run: |
-              az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-              SERVER=$(az acr show \
-                --name "${{ secrets.ACR_NAME }}" \
-                --resource-group "rg-devops-cia2" \
-                --query loginServer -o tsv)
-              echo "server=$SERVER" >> "$GITHUB_OUTPUT"
+jobs:
+    build-and-test:
+        runs-on: ubuntu-latest
 
-        # The ACR login and Docker build/push steps go here.
+        steps:
+            - name: Checkout source code
+              uses: actions/checkout@v4
+
+            - name: Set up Java 17
+              uses: actions/setup-java@v4
+              with:
+                  distribution: temurin
+                  java-version: "17"
+                  cache: maven
+
+            - name: Build and test with Maven
+              run: mvn --batch-mode clean verify
+
+            - name: Upload packaged JAR
+              uses: actions/upload-artifact@v4
+              with:
+                  name: java-application
+                  path: target/*.jar
+
+    publish-image:
+        needs: build-and-test
+        if: github.event_name == 'push'
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout source code
+              uses: actions/checkout@v4
+
+            - name: Log in to Azure
+              uses: azure/login@v2
+              with:
+                  creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+
+            - name: Select Azure subscription
+              run: az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+
+            - name: Get ACR login server
+              id: acr
+              shell: bash
+              run: |
+                  SERVER=$(az acr show \
+                    --name "${{ secrets.ACR_NAME }}" \
+                    --resource-group "rg-devops-cia2" \
+                    --query loginServer -o tsv)
+
+                  echo "server=$SERVER" >> "$GITHUB_OUTPUT"
+
+            - name: Log in to ACR
+              run: az acr login --name "${{ secrets.ACR_NAME }}"
+
+            - name: Build and push Docker image
+              env:
+                  REGISTRY: ${{ steps.acr.outputs.server }}
+                  IMAGE_TAG: ${{ github.sha }}
+              run: |
+                  docker build -t "$REGISTRY/devops-cia-2:$IMAGE_TAG" .
+                  docker push "$REGISTRY/devops-cia-2:$IMAGE_TAG"
+
+    deploy-to-aks:
+        needs: publish-image
+        if: github.event_name == 'push'
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Log in to Azure
+              uses: azure/login@v2
+              with:
+                  creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+
+            - name: Select Azure subscription
+              run: az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+
+            - name: Get AKS credentials
+              run: |
+                  az aks get-credentials \
+                    --resource-group "${{ secrets.AKS_RESOURCE_GROUP }}" \
+                    --name "${{ secrets.AKS_CLUSTER_NAME }}" \
+                    --admin \
+                    --overwrite-existing
+
+            - name: Deploy image to Kubernetes
+              env:
+                  IMAGE_TAG: ${{ github.sha }}
+                  ACR_NAME: ${{ secrets.ACR_NAME }}
+              run: |
+                  REGISTRY=$(az acr show \
+                    --name "$ACR_NAME" \
+                    --resource-group "rg-devops-cia2" \
+                    --query loginServer -o tsv)
+
+                  kubectl set image deployment/devops-cia-2 \
+                    java-app="$REGISTRY/devops-cia-2:$IMAGE_TAG"
+
+                  kubectl rollout status deployment/devops-cia-2 \
+                    --timeout=180s
+
+            - name: Verify deployment
+              run: |
+                  kubectl get deployments
+                  kubectl get pods
+                  kubectl get services
