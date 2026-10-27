@@ -1,0 +1,20 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: devops-cia-2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: devops-cia-2
+  template:
+    metadata:
+      labels:
+        app: devops-cia-2
+    spec:
+      containers:
+        - name: java-app
+          image: devopscia2abc123.azurecr.io/devops-cia-2:cefa8b8c91016093411ee0a101ad9d2824ed0f9e
+          ports:
+            - containerPort: 8080
