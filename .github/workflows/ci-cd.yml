@@ -92,14 +92,13 @@ jobs:
             - name: Get AKS credentials
               shell: bash
               env:
-                  AKS_RESOURCE_GROUP: ${{ secrets.AKS_RESOURCE_GROUP }}
-                  AKS_CLUSTER_NAME: ${{ secrets.AKS_CLUSTER_NAME }}
+                AKS_RESOURCE_GROUP: ${{ secrets.AKS_RESOURCE_GROUP }}
+                AKS_CLUSTER_NAME: ${{ secrets.AKS_CLUSTER_NAME }}
               run: |
-                  az aks get-credentials \
-                    --resource-group "$AKS_RESOURCE_GROUP" \
-                    --name "$AKS_CLUSTER_NAME" \
-                    --admin \
-                    --overwrite-existing
+                az aks get-credentials \
+                  --resource-group "$AKS_RESOURCE_GROUP" \
+                  --name "$AKS_CLUSTER_NAME" \
+                  --overwrite-existing
 
             - name: Deploy image to Kubernetes
               shell: bash
