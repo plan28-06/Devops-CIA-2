@@ -47,11 +47,61 @@ jobs:
               with:
                   creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
 
-            - name: Log in to Azure Container Registry
+            - name: Get ACR login server
+              id: acr
+              shell: bash
+              run: |
+                  SERVER=$(az acr show \
+                    --name "${{ secrets.ACR_NAME }}" \
+                    --query loginServer -o tsv)
+                  echo "server=$SERVER" >> "$GITHUB_OUTPUT"
+
+            - name: Log in to ACR
               run: az acr login --name "${{ secrets.ACR_NAME }}"
 
-            - name: Build and push Docker image
+            - name: Build and push image
+              env:
+                  REGISTRY: ${{ steps.acr.outputs.server }}
+                  IMAGE_TAG: ${{ github.sha }}
               run: |
-                  IMAGE="${{ secrets.ACR_NAME }}.azurecr.io/devops-cia-2:${GITHUB_SHA}"
-                  docker build -t "$IMAGE" .
-                  docker push "$IMAGE"
+                  docker build -t "$REGISTRY/devops-cia-2:$IMAGE_TAG" .
+                  docker push "$REGISTRY/devops-cia-2:$IMAGE_TAG"
+
+    deploy-to-aks:
+        needs: publish-image
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Log in to Azure
+              uses: azure/login@v2
+              with:
+                  creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+
+            - name: Get AKS credentials
+              run: |
+                  az aks get-credentials \
+                    --resource-group "${{ secrets.AKS_RESOURCE_GROUP }}" \
+                    --name "${{ secrets.AKS_CLUSTER_NAME }}" \
+                    --admin \
+                    --overwrite-existing
+
+            - name: Deploy image to Kubernetes
+              env:
+                  IMAGE_TAG: ${{ github.sha }}
+                  ACR_NAME: ${{ secrets.ACR_NAME }}
+              run: |
+                  REGISTRY=$(az acr show \
+                    --name "$ACR_NAME" \
+                    --query loginServer -o tsv)
+
+                  kubectl set image deployment/devops-cia-2 \
+                    java-app="$REGISTRY/devops-cia-2:$IMAGE_TAG"
+
+                  kubectl rollout status deployment/devops-cia-2 \
+                    --timeout=180s
+
+            - name: Verify deployment
+              run: |
+                  kubectl get deployments
+                  kubectl get pods
+                  kubectl get services
