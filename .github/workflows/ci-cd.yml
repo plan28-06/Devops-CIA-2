@@ -11,6 +11,7 @@ permissions:
 
 jobs:
     build-and-test:
+        name: Build and Test
         runs-on: ubuntu-latest
 
         steps:
@@ -34,6 +35,7 @@ jobs:
                   path: target/*.jar
 
     publish-image:
+        name: Build and Push Docker Image
         needs: build-and-test
         if: github.event_name == 'push'
         runs-on: ubuntu-latest
@@ -61,7 +63,7 @@ jobs:
 
                   echo "server=$SERVER" >> "$GITHUB_OUTPUT"
 
-            - name: Log in to ACR
+            - name: Log in to Azure Container Registry
               run: az acr login --name "${{ secrets.ACR_NAME }}"
 
             - name: Build and push Docker image
@@ -73,6 +75,7 @@ jobs:
                   docker push "$REGISTRY/devops-cia-2:$IMAGE_TAG"
 
     deploy-to-aks:
+        name: Deploy to AKS
         needs: publish-image
         if: github.event_name == 'push'
         runs-on: ubuntu-latest
@@ -86,44 +89,53 @@ jobs:
             - name: Select Azure subscription
               run: az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
 
+            - name: Diagnose Azure and AKS configuration
+              shell: bash
+              env:
+                  AKS_RESOURCE_GROUP: ${{ secrets.AKS_RESOURCE_GROUP }}
+                  AKS_CLUSTER_NAME: ${{ secrets.AKS_CLUSTER_NAME }}
+              run: |
+                  az version
+                  az account show --query "{subscription:id,tenant:tenantId}" -o yaml
+
+                  az aks show \
+                    --resource-group "$AKS_RESOURCE_GROUP" \
+                    --name "$AKS_CLUSTER_NAME" \
+                    --query "{state:provisioningState, privateCluster:apiServerAccessProfile.enablePrivateCluster, localAccountsDisabled:disableLocalAccounts}" \
+                    -o yaml
+
             - name: Get AKS credentials
-        shell: bash
-        env:
-            AKS_RESOURCE_GROUP: ${{ secrets.AKS_RESOURCE_GROUP }}
-            AKS_CLUSTER_NAME: ${{ secrets.AKS_CLUSTER_NAME }}
-        run: |
-            az version
-            az account show --query "{subscription:id,tenant:tenantId}" -o yaml
-            az aks show \
-              --resource-group "$AKS_RESOURCE_GROUP" \
-              --name "$AKS_CLUSTER_NAME" \
-              --query "{state:provisioningState, privateCluster:apiServerAccessProfile.enablePrivateCluster, localAccountsDisabled:disableLocalAccounts}" \
-              -o yaml
-            az aks get-credentials \
-              --resource-group "$AKS_RESOURCE_GROUP" \
-              --name "$AKS_CLUSTER_NAME" \
-              --admin \
-              --overwrite-existing \
-              --debug
+              shell: bash
+              env:
+                  AKS_RESOURCE_GROUP: ${{ secrets.AKS_RESOURCE_GROUP }}
+                  AKS_CLUSTER_NAME: ${{ secrets.AKS_CLUSTER_NAME }}
+              run: |
+                  az aks get-credentials \
+                    --resource-group "$AKS_RESOURCE_GROUP" \
+                    --name "$AKS_CLUSTER_NAME" \
+                    --admin \
+                    --overwrite-existing \
+                    --debug
 
-              - name: Deploy image to Kubernetes
-                env:
-                    IMAGE_TAG: ${{ github.sha }}
-                    ACR_NAME: ${{ secrets.ACR_NAME }}
-                run: |
-                    REGISTRY=$(az acr show \
-                      --name "$ACR_NAME" \
-                      --resource-group "rg-devops-cia2" \
-                      --query loginServer -o tsv)
+            - name: Deploy image to Kubernetes
+              shell: bash
+              env:
+                  IMAGE_TAG: ${{ github.sha }}
+                  ACR_NAME: ${{ secrets.ACR_NAME }}
+              run: |
+                  REGISTRY=$(az acr show \
+                    --name "$ACR_NAME" \
+                    --resource-group "rg-devops-cia2" \
+                    --query loginServer -o tsv)
 
-                    kubectl set image deployment/devops-cia-2 \
-                      java-app="$REGISTRY/devops-cia-2:$IMAGE_TAG"
+                  kubectl set image deployment/devops-cia-2 \
+                    java-app="$REGISTRY/devops-cia-2:$IMAGE_TAG"
 
-                    kubectl rollout status deployment/devops-cia-2 \
-                      --timeout=180s
+                  kubectl rollout status deployment/devops-cia-2 \
+                    --timeout=180s
 
-              - name: Verify deployment
-                run: |
-                    kubectl get deployments
-                    kubectl get pods
-                    kubectl get services
+            - name: Verify deployment
+              run: |
+                  kubectl get deployments
+                  kubectl get pods
+                  kubectl get services
