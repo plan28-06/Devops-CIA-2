@@ -23,6 +23,6 @@ class HelloControllerTest {
         mockMvc.perform(get("/"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(
-                        "Hello! Automatic CI/CD deployment works!"));
+                        "Hello!!! Automatic CI/CD deployment works!"));
     }
 }
